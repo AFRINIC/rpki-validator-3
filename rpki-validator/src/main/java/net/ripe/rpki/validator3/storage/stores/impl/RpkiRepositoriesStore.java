@@ -29,6 +29,7 @@
  */
 package net.ripe.rpki.validator3.storage.stores.impl;
 
+import com.google.common.base.Predicates;
 import com.google.common.collect.ImmutableMap;
 import lombok.extern.slf4j.Slf4j;
 import net.ripe.rpki.validator3.api.Paging;
@@ -61,6 +62,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
@@ -296,7 +298,7 @@ public class RpkiRepositoriesStore extends GenericStoreImpl<RpkiRepository> impl
                     rpkiRepository.removeTrustAnchor(taRef);
                     if (rpkiRepository.getTrustAnchors().isEmpty()) {
                         if (rpkiRepository.getType() == RpkiRepository.Type.RRDP) {
-                            tx.afterCommit(() -> validationScheduler.removeRpkiRepository(rpkiRepository));
+                            tx.afterCommit(() -> validationScheduler.removeRrdpRpkiRepository(rpkiRepository));
                         }
                         ixMap.delete(tx, pk);
                     } else {
@@ -313,6 +315,31 @@ public class RpkiRepositoriesStore extends GenericStoreImpl<RpkiRepository> impl
     @Override
     public Collection<RpkiRepository> findByTrustAnchor(Tx.Read tx, Key key) {
         return ixMap.getByIndex(BY_TA, tx, key).values();
+    }
+
+    @Override
+    public long deleteUnreferencedRepositories(Tx.Write tx, InstantWithoutNanos unreferencedSince) {
+        Stream<RpkiRepository> repositories = findRepositoriesByPredicate(tx, Predicates.alwaysTrue());
+        AtomicLong counter = new AtomicLong(0);
+
+        repositories
+                .sorted(Comparator.comparing(RpkiRepository::getLocationUri).reversed())
+                .forEach(rpkiRepository -> {
+                    InstantWithoutNanos lastReferencedAt = rpkiRepository.getLastReferencedAt();
+                    if (lastReferencedAt == null) {
+                        // Older versions did not set this field, so silently set it.
+                        rpkiRepository.setLastReferencedAt(InstantWithoutNanos.now());
+                        update(tx, rpkiRepository);
+                    } else if (lastReferencedAt.isBefore(unreferencedSince)) {
+                        if (rpkiRepository.getType() == RpkiRepository.Type.RRDP) {
+                            tx.afterCommit(() -> validationScheduler.removeRrdpRpkiRepository(rpkiRepository));
+                        }
+                        ixMap.delete(tx, rpkiRepository.key());
+
+                        counter.incrementAndGet();
+                    }
+                });
+        return counter.get();
     }
 
     @Override
