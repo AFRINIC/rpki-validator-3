@@ -29,14 +29,11 @@
  */
 package net.ripe.rpki.validator3.domain.cleanup;
 
-import net.ripe.ipresource.Asn;
-import net.ripe.ipresource.IpRange;
 import net.ripe.rpki.validator3.IntegrationTest;
 import net.ripe.rpki.validator3.TestObjects;
 import net.ripe.rpki.validator3.api.util.InstantWithoutNanos;
 import net.ripe.rpki.validator3.domain.ta.TrustAnchorsFactory;
 import net.ripe.rpki.validator3.storage.data.Ref;
-import net.ripe.rpki.validator3.storage.data.RoaPrefix;
 import net.ripe.rpki.validator3.storage.data.RpkiRepository;
 import net.ripe.rpki.validator3.storage.data.TrustAnchor;
 import net.ripe.rpki.validator3.storage.stores.RpkiRepositories;
@@ -46,9 +43,7 @@ import org.junit.runner.RunWith;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.test.context.junit4.SpringRunner;
 
-import java.math.BigInteger;
 import java.time.ZonedDateTime;
-import java.util.Collections;
 import java.util.stream.Collectors;
 
 import static org.hamcrest.Matchers.empty;
@@ -81,7 +76,7 @@ public class RpkiRepositoryCleanupServiceTest extends GenericStorageTest {
         assertThat(rtx(tx -> rpkiRepositories.findRsyncRepositories(tx).collect(Collectors.toList())), hasSize(1));
         assertThat(subject.cleanupRpkiRepositories(), is(0L));
 
-        repository.setLastReferencedAt(InstantWithoutNanos.from(ZonedDateTime.now().minusDays(20).toInstant()));
+        repository.getTrustAnchors().put(trustAnchorRef, InstantWithoutNanos.from(ZonedDateTime.now().minusDays(20).toInstant()));
         wtx0(tx -> rpkiRepositories.update(tx, repository));
 
         assertThat(subject.cleanupRpkiRepositories(), is(1L));

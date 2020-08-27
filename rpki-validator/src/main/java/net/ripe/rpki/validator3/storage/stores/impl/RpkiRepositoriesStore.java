@@ -57,6 +57,7 @@ import java.net.URI;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -89,7 +90,7 @@ public class RpkiRepositoriesStore extends GenericStoreImpl<RpkiRepository> impl
                 RPKI_REPOSITORIES,
                 ImmutableMap.of(
                         BY_URI_PREFIX, this::locationIndex,
-                        BY_TA, r -> r.getTrustAnchors().stream().map(Ref::key).collect(Collectors.toSet())
+                        BY_TA, r -> r.getTrustAnchors().keySet().stream().map(Ref::key).collect(Collectors.toSet())
                 ),
                 RpkiRepository.class
         );
@@ -121,8 +122,6 @@ public class RpkiRepositoriesStore extends GenericStoreImpl<RpkiRepository> impl
             final Key primaryKey = Key.of(sequences.next(tx, RPKI_REPOSITORIES + ":pk"));
             registered.setId(primaryKey);
         }
-
-        registered.setLastReferencedAt(InstantWithoutNanos.now());
 
         if (type == RpkiRepository.Type.RSYNC && registered.getType() == RpkiRepository.Type.RSYNC_PREFETCH) {
             registered.setType(RpkiRepository.Type.RSYNC);
@@ -325,18 +324,29 @@ public class RpkiRepositoriesStore extends GenericStoreImpl<RpkiRepository> impl
         repositories
                 .sorted(Comparator.comparing(RpkiRepository::getLocationUri).reversed())
                 .forEach(rpkiRepository -> {
-                    InstantWithoutNanos lastReferencedAt = rpkiRepository.getLastReferencedAt();
-                    if (lastReferencedAt == null) {
-                        // Older versions did not set this field, so silently set it.
-                        rpkiRepository.setLastReferencedAt(InstantWithoutNanos.now());
-                        update(tx, rpkiRepository);
-                    } else if (lastReferencedAt.isBefore(unreferencedSince)) {
+                    Map<Ref<TrustAnchor>, InstantWithoutNanos> trustAnchors = rpkiRepository.getTrustAnchors();
+
+                    boolean updated = false;
+                    Iterator<Map.Entry<Ref<TrustAnchor>, InstantWithoutNanos>> it = trustAnchors.entrySet().iterator();
+                    while (it.hasNext()) {
+                        Map.Entry<Ref<TrustAnchor>, InstantWithoutNanos> pair = it.next();
+                        InstantWithoutNanos lastReferencedAt = pair.getValue();
+                        if (lastReferencedAt.isBefore(unreferencedSince)) {
+                            it.remove();
+                            updated = true;
+                        }
+                    }
+
+                    if (trustAnchors.isEmpty()) {
+                        log.info("removing RPKI repository {} (unreferenced since {})", rpkiRepository.getLocationUri(), unreferencedSince);
                         if (rpkiRepository.getType() == RpkiRepository.Type.RRDP) {
                             tx.afterCommit(() -> validationScheduler.removeRrdpRpkiRepository(rpkiRepository));
                         }
                         ixMap.delete(tx, rpkiRepository.key());
 
                         counter.incrementAndGet();
+                    } else if (updated) {
+                        update(tx, rpkiRepository);
                     }
                 });
         return counter.get();
